@@ -16,6 +16,8 @@ class StorageNode (BaseNode):
         """
 
         super(StorageNode, self).__init__(port)
+
+        # Словарь данных: ключ -> (ts, writer_uuid, значение)
         self.data_dict = {}
 
     def process_request(self, request: mp.BaseMessage) -> mp.BaseMessage:
@@ -39,11 +41,27 @@ class StorageNode (BaseNode):
         """
         Функция обработки запроса на запись
 
+        Запись применяется, если она новее уже сохранённой: сравниваем ts,
+        при равных ts - идентификаторы записавших серверов (меньший uuid
+        выигрывает). Устаревшая запись игнорируется, но подтверждается.
+
         :param wr: запрос на запись
         :return: ответ на запрос на запись
         """
 
         print('Storage node - write request: %s' % mp.Serializer.to_json(wr))
+
+        if wr.data_key not in self.data_dict:
+            self.data_dict[wr.data_key] = (wr.ts, wr.writer_uuid, wr.data_value)
+
+        else:
+            current_ts, current_writer_uuid, current_value = self.data_dict[wr.data_key]
+
+            if wr.ts > current_ts:
+                self.data_dict[wr.data_key] = (wr.ts, wr.writer_uuid, wr.data_value)
+
+            elif wr.ts == current_ts and wr.writer_uuid < current_writer_uuid:
+                self.data_dict[wr.data_key] = (wr.ts, wr.writer_uuid, wr.data_value)
 
         return mp.WriteResponse(True)
 
@@ -57,7 +75,11 @@ class StorageNode (BaseNode):
 
         print('Storage node - read request: %s' % mp.Serializer.to_json(rr))
 
-        return mp.ReadResponse(False, '', 0, rr.data_key, "")
+        if rr.data_key in self.data_dict:
+            ts, writer_uuid, data_value = self.data_dict[rr.data_key]
+            return mp.ReadResponse(True, writer_uuid, ts, rr.data_key, data_value)
+
+        return mp.ReadResponse(False, '', 0, rr.data_key, '')
 
 
 def main(argv):
