@@ -45,7 +45,22 @@ class AccessPointNode(BaseNode):
 
         print('Access Point node - set request: %s' % mp.Serializer.to_json(set_request))
 
-        return mp.SetResponse(False)
+        quorum = self.get_quorum()
+        read_responses = [
+            mp.send_message(node['host'], node['port'], mp.ReadRequest(set_request.data_key))
+            for node in quorum
+        ]
+        existing_ts = [response.ts for response in read_responses if response.is_key_exist]
+        new_ts = max(existing_ts, default=0) + 1
+
+        write_responses = [
+            mp.send_message(
+                node['host'], node['port'],
+                mp.WriteRequest(self._uuid, new_ts, set_request.data_key, set_request.data_value)
+            )
+            for node in quorum
+        ]
+        return mp.SetResponse(all(response.is_ack for response in write_responses))
 
     def process_get_request(self, get_request: mp.GetRequest) -> mp.GetResponse:
         """
@@ -56,7 +71,26 @@ class AccessPointNode(BaseNode):
 
         print('Access Point node - get request: %s' % mp.Serializer.to_json(get_request))
 
-        return mp.GetResponse('', '', False)
+        quorum = self.get_quorum()
+        read_responses = [
+            mp.send_message(node['host'], node['port'], mp.ReadRequest(get_request.data_key))
+            for node in quorum
+        ]
+        existing = [response for response in read_responses if response.is_key_exist]
+        if not existing:
+            return mp.GetResponse(get_request.data_key, '', False)
+
+        latest_ts = max(response.ts for response in existing)
+        latest = min(
+            (response for response in existing if response.ts == latest_ts),
+            key=lambda response: response.writer_uuid
+        )
+        for node in quorum:
+            mp.send_message(
+                node['host'], node['port'],
+                mp.WriteRequest(latest.writer_uuid, latest_ts, get_request.data_key, latest.data_value)
+            )
+        return mp.GetResponse(get_request.data_key, latest.data_value, True)
 
     def get_quorum(self) -> list:
         """
